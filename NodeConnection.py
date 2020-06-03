@@ -53,7 +53,6 @@ def work(addr, name):
 
 #Handle User Input
 def handleInput(input):
-    if(input = "help")
     commandBuffer.append(input)
 
 #Get User Input
