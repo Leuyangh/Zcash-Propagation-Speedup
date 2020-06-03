@@ -5,7 +5,10 @@ import sys, os, string, threading, time
 #Globals
 user = "ubuntu"
 filepath = "C:/Users/Eric/Documents/AWS/Eric-Keypair.pem"
+commandsMessage = ">Commands: -listNodes, -flushBuffer, -usage"
+usageMessage = ">Usage: <Node><channel message>. Use -ALL to send to all nodes."
 
+allNodes = ['3.101.60.215', '54.177.243.189', '3.101.68.11'] #Elastic IPs of nodes
 threadNames = []
 commandBuffer = []
 
@@ -51,13 +54,42 @@ def work(addr, name):
     print(">" + name + " closed.")
     client.close()
 
+#list all nodes - TODO list only active
+def listNodes():
+    print(">All Nodes: ")
+    for n in threadNames:
+        print("\t"+n)
+
+#clears buffer of any wrongly formatted and unused commands or ones sent to dead threads
+def flushBuffer():
+    commandBuffer.clear()
+    print(">Buffer Flushed")
+
+#send command to all nodes
+def sendALL(input):
+    for n in threadNames:
+        commandBuffer.append(n+input)
+
 #Handle User Input
 def handleInput(input):
-    commandBuffer.append(input)
+    if input == "-c":
+        print(commandsMessage)
+    if input == "-listNodes":
+        listNodes()
+    if input == "-flushBuffer":
+        flushBuffer()
+    if input == "-usage":
+        print(usageMessage)
+    else:
+        if input[:4] == "-ALL":
+            sendALL(input[4:])
+        else:
+            commandBuffer.append(input)
 
 #Get User Input
 def getInput():
     running = True
+    print(">Type -c to see command list")
     while running:
         UserInput = input(">Enter Command: ")
         if(UserInput == "Quit" or UserInput == "quit" or UserInput == "q"):
@@ -72,11 +104,10 @@ def getInput():
 
 #Create and start threads
 def main():
-    Nodes = ['3.101.60.215', '54.177.243.189', '3.101.68.11'] #Elastic IPs of nodes
     Threads = []
     Count = 0
     BaseName = "Node"
-    for ip in Nodes:
+    for ip in allNodes:
         FullName = BaseName + str(Count) + ":"
         t = threading.Thread(target=work, args=(ip, FullName,))
         t.start()
