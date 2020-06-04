@@ -15,7 +15,7 @@ inputFileName = ""
 #rpc commands
 rpcadd = "./src/zcash-cli addpeer"
 
-allNodes = ['54.151.28.66', '54.151.20.171', '54.151.20.171'] #Elastic IPs of nodes
+allNodes = ['54.151.28.66', '54.151.20.171', '54.193.222.15', '13.57.173.210'] #Elastic IPs of nodes
 threadNames = set()
 threadsRunning = []
 commandBuffer = []
@@ -185,7 +185,7 @@ def main():
         print("Saving logfile under " + logfileName)
         open(logfileName, "x")
     #check input file and print, also set global
-    if args.inputFile != "":
+    if args.inputFile:
         global inputFileName
         inputFileName = args.inputFile
         print(f'Input file: {inputFileName}')
