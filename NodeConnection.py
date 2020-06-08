@@ -11,15 +11,17 @@ logfileBase = "C:/Users/Eric/Documents/Insight/Logs/logfile"
 logfileOn = False
 logfileName = ""
 inputFileName = ""
-updateFreq = 300 #rough seconds between peerlist updates
-updateCounter = 0 #global counter
+updateFreq = 10 #rough seconds between peerlist updates for each thread
+writeFreq = 15 #how often the logfile is automatically written updates to
+writeCounter = 0
 
-allNodes = ['54.151.28.66', '54.151.20.171', '54.193.222.15', '13.57.173.210'] #Elastic IPs of nodes
-threads = []
+allNodes = ['54.151.28.66', '54.151.20.171', '54.193.222.15', '13.57.173.210', '54.241.71.228', '54.193.121.153', '54.183.241.216', '54.183.141.249', '54.176.230.15', '54.219.174.106'] #Elastic IPs of nodes
+threads = [] #TODO maybe eliminate, just the thread array
 threadNames = set()
-threadsRunning = []
-commandBuffer = []
-nodePeers = {}
+threadsRunning = [] #boolean array of threads currently executing vs not executing
+commandBuffer = [] #commands waiting to run
+nodePeers = {} #current map of node->peer IPs
+prevPeers = {} #previous peerlist, for determining if change occurred
 
 ########################utility functions
 
@@ -34,26 +36,6 @@ def clean(input):
     input = input.replace(" ", "")
     input = input.replace("\"\"", "\"")
     return input
-
-#list all nodes - TODO list only active
-def listNodes():
-    print(">All Nodes: ")
-    for n in threadNames:
-        print(f"\t Node '{n}'' ({allNodes[int(n)]})")
-
-#list all peers known
-def listPeers():
-    print(f">All Nodes and peers as of {datetime.datetime.now()}: ")
-    writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}: ")
-    for n in threadNames:
-        print(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}):")
-        writeToLog(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}):")
-        if n in nodePeers:
-            counter = 1
-            for p in nodePeers[n]:
-                print(f"\t\t{counter}: {p}")
-                writeToLog(f"\t\t{counter}: {p}")
-                counter+=1
 
 #clears buffer of any wrongly formatted and unused commands or ones sent to dead threads
 def flushBuffer():
@@ -70,10 +52,10 @@ def sendOne(node, input):
     commandBuffer.append(node + " " + input)
 
 #check if command targets a valid node
-def validTarget(name):
+def validTarget(node):
     valid = False
     for n in threadNames:
-        if name == n:
+        if node == n:
             valid = True
             break
     return valid
@@ -85,39 +67,88 @@ def removeAllPeers(node):
         commandBuffer.append(f"{node} ./src/zcash-cli disconnectnode {ip}")
     return
 
+#add a peer to a node
+def addPeer(node, addr):
+    if validTarget(node):
+        commandBuffer.append(f"{node} ./src/zcash-cli addnode {addr} add")
+    else:
+        return
+
 #write to logfile
 def writeToLog(input):
-    print(input)
     if logfileOn:
-        with open(logfileName, "a") as f:
-            original_stdout = sys.stdout
-            sys.stdout = f
-            print(input)
-            sys.stdout = original_stdout
+        f = open(logfileName, "a")
+        f.write(input)
+        f.close()
 
 ########################Worker thread functions
 
 #Wait for commands in buffer and remove them if its for this thread
-def waitForWork(name, chan):
-    global updateCounter
+def waitForWork(node, chan):
+    global writeCounter
+    updateCounter = 0
     while True:
         positionCounter = 0
+        #search command buffer for one meant for me
         for cmd in commandBuffer:
-            if name == cmd.split(" ")[0]:
+            if node == cmd.split(" ")[0]:
                 commandBuffer.pop(positionCounter)
-                return cmd[len(name):]
+                return cmd[len(node):]
             else:
                 positionCounter += 1
         time.sleep(1)
         updateCounter += 1
-        if updateCounter%updateFreq == 0:
+        writeCounter += 1
+        #auto update peerlist
+        if updateCounter >= updateFreq:
+            #print(f"Node {name} updating peerlist")
             updateCounter = 0
-            #print(f">Node '{name}' updating peerlist in the background")
-            updatePeerListAuto(name, chan)
+            updatePeerListAuto(node, chan)
+        if writeCounter == writeFreq:
+            #print("Auto writing peerlist")
+            writeCounter = 0
+            writePeers()
+        if writeCounter > writeFreq: #thread sync error possible
+            writeCounter = 0
+
+#list all nodes - TODO list only active
+def listNodes():
+    print(">All Nodes: ")
+    for n in threadNames:
+        print(f"\t Node '{n}'' ({allNodes[int(n)]})")
+
+#write all peers known
+def writePeers():
+    global prevPeers
+    if sorted(prevPeers.values()) == sorted(nodePeers.values()):
+        writeToLog(f">No change as of {datetime.datetime.now()} \n")
+        return
+    prevPeers = nodePeers.copy()
+    writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}: \n")
+    for n in threadNames:
+        writeToLog(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}): \n")
+        if n in nodePeers:
+            counter = 1
+            for p in nodePeers[n]:
+                writeToLog(f"\t\t{counter}: {p} \n")
+                counter+=1
+
+#list all peers known
+def listPeers():
+    print(f">All Nodes and peers as of {datetime.datetime.now()}: ")
+    for n in threadNames:
+        print(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}):")
+        if n in nodePeers:
+            counter = 1
+            for p in nodePeers[n]:
+                print(f"\t\t{counter}: {p}")
+                counter+=1
+    writePeers()
 
 #update the list of known peers for this node having already gotten output from a getpeerinfo command
 def updatePeerList(name, output):
     global nodePeers
+    oldList = nodePeers
     output = clean(output)
     test = output.split("\"")
     peers = []
@@ -131,15 +162,9 @@ def updatePeerListAuto(name, chan):
     #will work only after we have moved directory into the zcash dir
     chan.send("./src/zcash-cli getpeerinfo \n")
     time.sleep(1)
-    resp = chan.recv(99999)
+    resp = chan.recv(999999)
     output = resp.decode('ascii').split(',')
     updatePeerList(name, ''.join(output))
-    if logfileOn:
-        with open(logfileName, "a") as f:
-            original_stdout = sys.stdout
-            sys.stdout = f
-            listPeers()
-            sys.stdout = original_stdout
 
 #Process command, return response from node
 def processCommand(chan, cmd, name, addr):
@@ -166,7 +191,7 @@ def processCommand(chan, cmd, name, addr):
     chan.send(cmd)
     chan.send('\n')
     time.sleep(waittime)
-    resp = chan.recv(99999)
+    resp = chan.recv(999999)
     message = "\n>Node " + name + " (" + addr + ") Received:"
     message += ("\n>______________________________________________________ \n")
     output = resp.decode('ascii').split(',')
@@ -178,6 +203,7 @@ def processCommand(chan, cmd, name, addr):
     if "addnode" in cmd or "disconnectnode" in cmd:
         updatePeerListAuto(name, chan)
     #record received messages to logfile
+    print(message)
     writeToLog(message)
 
 #Main function of a thread - wait for commands and execute after creating channel
@@ -199,11 +225,10 @@ def work(addr, name):
         processCommand(chan, cmd, name, addr)
         if "exit" in cmd:
             break
-    #Done working, time to close
-    #update frequency timer
-    global updateFreq
-    base = updateFreq/len(threadNames)
-    updateFreq = base * (len(threadNames) - 1)
+    #Done working, time to close but first reduce write frequency since this thread isnt contributing to the writeCounter
+    global writeFreq
+    base = writeFreq/len(threadNames)
+    writeFreq = base * (len(threadNames) - 1)
     threadNames.remove(name)
     threadsRunning[position] = 0
     print(">" + name + " closed.")
@@ -303,8 +328,7 @@ def getInput():
                 print(">User thread waiting on node threads. Sleeping...")
                 time.sleep(1)
                 counter += 1
-            if counter >= 15:
-                print(">Waited on a node long enough. Resuming")
+            if counter >= 30:
                 break
     print(">User thread exited.")
 
@@ -331,7 +355,7 @@ def main():
         with open(inputFileName, "r") as f:
             print(f.read())
     #create and start threads
-    global threads, threadNames, nodePeers
+    global threads, threadNames, nodePeers, writeFreq
     count = 0
     for ip in allNodes:
         name = str(count)
@@ -344,9 +368,7 @@ def main():
         nodePeers[name] = []
         count+=1
     threadNames = sorted(threadNames)
-    #with x threads running, frequency should be multiplied by x or it will update at freq/x seconds
-    global updateFreq
-    updateFreq *= len(threads)
+    writeFreq *= len(threadNames) #or else it progresses at N times too fast
     #starting user thread, only non-daemon
     UserThread = threading.Thread(target = getInput)
     UserThread.start()
