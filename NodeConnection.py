@@ -2,14 +2,16 @@ import argparse, datetime
 import paramiko
 import sys, os, string, threading, time
 import boto3
+from twilio.rest import Client
 
 ########################Globals
 user = "ubuntu"
-filepath = "C:/Users/Eric/Documents/AWS/Eric-Keypair.pem"
+filepath = "/Users/erichuang/Downloads/Eric-Keypair.pem"
 commandsMessage = ">Commands: -listNodes, listPeers, -flushBuffer, -usage, -addPeer <node or -all> <ip>, -remPeer <node> <ip or -all>"
 usageMessage = ">Usage: <Node(s)> -c <channel message> <optional -t waittime, defaults to 1s>. Use -ALL to send to all nodes."
-logfileBase = "C:/Users/Eric/Documents/Insight/Logs/logfile"
+logfileBase = "/Users/erichuang/Documents/InsightLogs/"
 startupCommand = "zcash/src/zcashd -daemon --outboundconnections=200"
+twilioAuthPath = "/Users/erichuang/Documents/twilioAuth.txt"
 logfileOn = False
 logfileName = ""
 inputFileName = ""
@@ -17,6 +19,9 @@ updateFreq = 10 #rough seconds between peerlist updates for each thread
 writeFreq = 30 #how often the logfile is automatically written updates to
 writeCounter = 0
 
+tAuth = [] #for texting
+lastMessage = datetime.datetime(2020, 5, 17)
+textlock = False
 allNodes = []#['54.151.28.66', '54.151.20.171', '54.193.222.15', '13.57.173.210', '54.241.71.228', '54.193.121.153', '54.183.241.216', '54.183.141.249', '54.176.230.15', '54.219.174.106'] #Elastic IPs of nodes
 syncedNodes = {} #dictionary node->bool, int, chan for sync status, peer count, channel of this node
 threadNames = set()
@@ -74,12 +79,18 @@ def validTarget(node):
 
 #add a peer to a node
 def addPeer(name, addr):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-    stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli addnode {addr} add')
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli addnode {addr} add')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from addPeer")
+        sendText("Error occurred, go check your terminal")
+    finally:
+        return
 
 #for silently removing peers without printing to CLI
 def removePeer(name, chan, addr):
@@ -112,42 +123,52 @@ def removeAllPeers(node):
   "errors": " """ #Example GETINFO call return
 #get blockchain height at this time
 def getBlockHeight():
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(allNodes[int(threadNames[0])], username=user, key_filename=filepath)
-    stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli getinfo')
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
-    lines = ''.join(stdout.readlines())
-    lines = lines.replace(',', ':')
-    lines = lines.replace("\"", "")
-    lines = clean(lines)
-    lines = lines.split(":")
-    if "blocks" in lines:
-        idx = lines.index("blocks")
-        return lines[idx+1].strip()
-    else:
-        return "Error getting blockheight"
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(threadNames[0])], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli getblockcount')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        lines = ''.join(stdout.readlines())
+        #lines = lines.replace(',', ':')
+        #lines = lines.replace("\"", "")
+        #lines = clean(lines)
+        #lines = lines.split(":")
+        lines = lines.strip()
+        if lines.isdigit() == True:
+            #idx = lines.index("blocks")
+            return lines
+        else:
+            return "Error getting blockheight"
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from getBlockHeight")
+        sendText("Error occurred, go check your terminal")
 
 #check if this node is synced yet, and how many peers it has
 def isSynced(name):
-    syncedNodes[name] = (False, 0)
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-    stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getconnectioncount\n')
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
-    lines = ''.join(stdout.readlines())
-    output = lines.split('\n')
-    if len(output) >= 2 and output[-2].isdigit(): #second to last line, up to the second to last char which are always "\r"
-        syncedNodes[name] = (True, int(output[-2]))
-        return True
+    try:
+        syncedNodes[name] = (False, 0)
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getconnectioncount\n')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        lines = ''.join(stdout.readlines())
+        output = lines.split('\n')
+        if len(output) >= 2 and output[-2].isdigit(): #second to last line, up to the second to last char which are always "\r"
+            syncedNodes[name] = (True, int(output[-2]))
+            return True
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from isSynced")
+        sendText("Error occurred, go check your terminal")
     try:
         writeToLog(f">Error when checking sync, sending startupCommand\n")
         startup(name)
     except:
         writeToLog(f">Error when checking sync, sending startupCommand2\n")
+        sendText("Error occurred, go check your terminal")
     finally:
         return False
 
@@ -158,40 +179,46 @@ def listSync():
 #remove duplicate peers
 ## TODO:
 def removeDuplicates():
-    writeToLog("Starting new duplicate removal round\n")
-    previousPeers = []
-    for name, info in syncedNodes.items():
-        if info[0] == True:
-            peers = nodePeers[name]
-            if len(peers) != info[1]:
-                #writeToLog(f">Missed sync here with node {name}. Nodepeers finds {len(nodePeers[name])}, synced node info finds {info[1]}\n")
-                updatePeerListAuto(name)
-            for p in peers:
-                if p.split(":")[0] in allNodes:
-                    #writeToLog(f">{p} is one of our nodes, skipping disconnect\n")
-                    continue
-                if previousPeers.count(p) > 1:
-                    writeToLog(f">Duplicate peer found: {p}. Removing from node {name}.\n")
-                    client = paramiko.SSHClient()
-                    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                    client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-                    stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli disconnectnode ' + p + '\n')
-                    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-                        time.sleep(0.2)
-                    lines = stderr.readlines()
-                    if "error" in lines:
-                        writeToLog(f">Error removing duplicate {p} from node {name}\n")
-                        writeToLog(f"\t>Error: {lines}")
-                    stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli setban ' + p + ' add 900\n')
-                    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-                        time.sleep(0.2)
-                    lines = stderr.readlines()
-                    if "error" in lines:
-                        writeToLog(f">Error banning duplicate {p} from node {name}\n")
-                        writeToLog(f"\t>Error: {lines}")
-                    client.close()
-                else:
-                    previousPeers.append(p)
+    try:
+        writeToLog("Starting new duplicate removal round\n")
+        previousPeers = []
+        for name, info in syncedNodes.items():
+            if info[0] == True:
+                peers = nodePeers[name]
+                if len(peers) != info[1]:
+                    #writeToLog(f">Missed sync here with node {name}. Nodepeers finds {len(nodePeers[name])}, synced node info finds {info[1]}\n")
+                    updatePeerListAuto(name)
+                for p in peers:
+                    if p.split(":")[0] in allNodes:
+                        #writeToLog(f">{p} is one of our nodes, skipping disconnect\n")
+                        continue
+                    if previousPeers.count(p) > 1:
+                        writeToLog(f">Duplicate peer found: {p}. Removing from node {name}.\n")
+                        client = paramiko.SSHClient()
+                        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+                        stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli disconnectnode ' + p + '\n')
+                        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+                            time.sleep(0.2)
+                        lines = stderr.readlines()
+                        if "error" in lines:
+                            writeToLog(f">Error removing duplicate {p} from node {name}\n")
+                            writeToLog(f"\t>Error: {lines}")
+                        stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli setban ' + p + ' add 900\n')
+                        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+                            time.sleep(0.2)
+                        lines = stderr.readlines()
+                        if "error" in lines:
+                            writeToLog(f">Error banning duplicate {p} from node {name}\n")
+                            writeToLog(f"\t>Error: {lines}")
+                        client.close()
+                    else:
+                        previousPeers.append(p)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from removeDuplicates")
+        sendText("Error occurred, go check your terminal")
+    finally:
+        return
 
 #add peers of my network
 def createCycle():
@@ -202,12 +229,18 @@ def createCycle():
 
 #Send startup command to a node that may have shut down for some reason
 def startup(name):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-    stdin, stdout, stderr = client.exec_command(startupCommand)
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command(startupCommand)
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from startup")
+        sendText("Error occurred, go check your terminal")
+    finally:
+        return
 
 def managePeers():
     createdCycle = False
@@ -243,32 +276,38 @@ def listNodes():
 
 #write all peers known
 def writePeers():
-    global prevPeers, writeCounter
-    if sorted(prevPeers.values()) == sorted(nodePeers.values()):
-        writeToLog(f">No change as of {datetime.datetime.now()} \n")
+    try:
+        global prevPeers, writeCounter
+        if sorted(prevPeers.values()) == sorted(nodePeers.values()):
+            writeToLog(f">No change as of {datetime.datetime.now()} \n")
+            return
+        prevPeers = nodePeers.copy()
+        writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}, block height {getBlockHeight()}: \n")
+        prev = []
+        dupeCounter = 0
+        totalCounter = 0
+        for n in threadNames:
+            writeToLog(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}): \n")
+            writeCounter = 0 #dont want other threads running this while we're still in it so keep resetting while this function runs
+            if n in nodePeers:
+                counter = 1
+                for p in nodePeers[n]:
+                    writeToLog(f"\t\t{counter}: {p}")
+                    if p.split(":")[0] in allNodes:
+                        writeToLog("*")
+                    writeToLog("\n")
+                    counter+=1
+                    totalCounter+=1
+                    if p in prev:
+                        dupeCounter+=1
+                    else:
+                        prev.append(p)
+        writeToLog(f">{totalCounter} total Nodes with {dupeCounter} duplicates and {len(prev)} uniques\n")
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from writePeers")
+        sendText("Error occurred, go check your terminal")
+    finally:
         return
-    prevPeers = nodePeers.copy()
-    writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}, block height {getBlockHeight()}: \n")
-    prev = []
-    dupeCounter = 0
-    totalCounter = 0
-    for n in threadNames:
-        writeToLog(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}): \n")
-        writeCounter = 0 #dont want other threads running this while we're still in it so keep resetting while this function runs
-        if n in nodePeers:
-            counter = 1
-            for p in nodePeers[n]:
-                writeToLog(f"\t\t{counter}: {p}")
-                if p.split(":")[0] in allNodes:
-                    writeToLog("*")
-                writeToLog("\n")
-                counter+=1
-                totalCounter+=1
-                if p in prev:
-                    dupeCounter+=1
-                else:
-                    prev.append(p)
-    writeToLog(f">{totalCounter} total Nodes with {dupeCounter} duplicates and {len(prev)} uniques\n")
 
 #list all peers known
 def listPeers():
@@ -296,14 +335,20 @@ def updatePeerList(name, output):
 
 #update the peerlist without having received a getpeerinfo command
 def updatePeerListAuto(name):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-    stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getpeerinfo \n')
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
-    lines = stdout.readlines()
-    updatePeerList(name, ''.join(lines))
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getpeerinfo \n')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        lines = stdout.readlines()
+        updatePeerList(name, ''.join(lines))
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from updatePeerListAuto")
+        sendText("Error occurred, go check your terminal")
+    finally:
+        return
 
 #get peer address from a cmd and return the final command to be run by a node
 def getPeerAddr(cmd, flag, name):
@@ -372,22 +417,28 @@ def processCommand(chan, cmd, name, addr):
         if cmd == "":
             return
     #send the command and receive the response
-    chan.send(cmd + '\n')
-    time.sleep(waittime)
-    resp = chan.recv(999999)
-    message = "\n>Node " + name + " (" + addr + ") Received:"
-    message += ("\n>______________________________________________________ \n")
-    output = resp.decode('ascii').split(',')
-    message += (''.join(output))
-    #if the command was getpeerinfo then we want to update the peerlist
-    if "getpeerinfo" in cmd:
-        updatePeerList(name, ''.join(output))
-    #if the command to add or disconnect a node update the peer list using the no-prior output function
-    if "addnode" in cmd or "disconnectnode" in cmd:
-        updatePeerListAuto(name)
-    #record received messages to logfile
-    print(message)
-    writeToLog(message)
+    try:
+        chan.send(cmd + '\n')
+        time.sleep(waittime)
+        resp = chan.recv(999999)
+        message = "\n>Node " + name + " (" + addr + ") Received:"
+        message += ("\n>______________________________________________________ \n")
+        output = resp.decode('ascii').split(',')
+        message += (''.join(output))
+        #if the command was getpeerinfo then we want to update the peerlist
+        if "getpeerinfo" in cmd:
+            updatePeerList(name, ''.join(output))
+        #if the command to add or disconnect a node update the peer list using the no-prior output function
+        if "addnode" in cmd or "disconnectnode" in cmd:
+            updatePeerListAuto(name)
+        #record received messages to logfile
+        print(message)
+        writeToLog(message)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from processCommand")
+        sendText("Error occurred, go check your terminal")
+    finally:
+        return
 
 #Wait for commands in buffer and remove them if its for this thread
 def waitForWork(node, chan):
@@ -560,6 +611,33 @@ def getInput():
                 break
     print(">User thread exited.")
 
+def sendText(message):
+    global lastMessage, textlock
+    time_delta = (datetime.datetime.now() - lastMessage)
+    total_seconds = time_delta.total_seconds()
+    print(f"{total_seconds} since last text")
+    if int(total_seconds) >= 300 and textlock == False:
+        textlock = True
+        success = sendTextInstant(message)
+        if success == True:
+            lastMessage = datetime.datetime.now()
+            print(f"Setting last text to {lastMessage}")
+        else:
+            lastMessage = datetime.datetime.now() - datetime.timedelta(seconds = 240)
+            print(f"Setting last text to {lastMessage}, 4 min ago from {datetime.datetime.now()}")
+        textlock = False
+
+def sendTextInstant(message):
+    success = True
+    try:
+        client = Client(tAuth[0], tAuth[1])
+        client.messages.create(to="+13107795882", from_="+12029337899", body=message)
+    except:
+        print(f"Error sending text message reminder: {sys.exc_info()[0]}")
+        success = False
+    finally:
+        return success
+
 #Create and start threads
 def main():
     parser = argparse.ArgumentParser()
@@ -585,7 +663,13 @@ def main():
         with open(inputFileName, "r") as f:
             print(f.read()) #TODO do smth with file
     #create and start threads
-    global threadNames, nodePeers, writeFreq, allNodes
+    global threadNames, nodePeers, writeFreq, allNodes, tAuth, lastMessage
+    #text me updates TODO get rid of these they're annoying
+    aFile = open(twilioAuthPath, 'r')
+    tAuth = aFile.readlines()
+    aFile.close()
+    sendText(f"Starting up node monitor at {datetime.datetime.now()}")
+    sendText("ERROR: SHOULD NOT BE RECEIVED")
     allNodes = getNodeIPs(args.namefilter, args.valuefilter)
     if len(allNodes) == 0:
         print("No IPs found, that the tags arguments create the proper filter and that your nodes are running")
