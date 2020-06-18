@@ -4,20 +4,23 @@ import sys, os, string, threading, time
 import boto3
 from twilio.rest import Client
 
-########################Globals
-#logging and ssh channel creation globals
+"""
+###########################
+Global variables
+###########################
+"""
+### logging and ssh channel creation globals
 user = "ubuntu"
 filepath = "C:/Users/Eric/Documents/AWS/Eric-Keypair.pem"
 commandsMessage = ">Commands: -listNodes, listPeers, -flushBuffer, -usage, -addPeer <node or -all> <ip>, -remPeer <node> <ip or -all>"
 usageMessage = ">Usage: <Node(s)> -c <channel message> <optional -t waittime, defaults to 1s>. Use -ALL to send to all nodes."
 logfileBase = "C:/Users/Eric/Documents/Insight/Logs/logfile"
-startupCommand = "zcash/src/zcashd -daemon --outboundconnections=200"
+startupCommand = "zcash/src/zcashd -daemon --outboundconnections=200 --maxconnections=500"
 twilioAuthPath = "C:/Users/Eric/Documents/Insight/TwilioAuth.txt"
 logfileOn = False
 logfileName = ""
-inputFileName = ""
-updateFreq = 10 #rough seconds between peerlist updates for each thread
-writeFreq = 30 #how often the logfile is automatically written updates to
+updateFreq = 30 #rough seconds between peerlist updates for each thread
+writeFreq = 60 #how often the logfile is automatically written updates to
 writeCounter = 0 #global counter towards writing peers to log
 
 #texting reminder globals
@@ -25,6 +28,9 @@ lastMessage = datetime.datetime(2020, 5, 17)
 textlock = False #lock out of sending multiple messages by different threads
 textenabled = False
 twilioClient = None
+
+#for automation
+experimentTime = -1
 
 #node tracking globals
 allNodes = [] # IPs of nodes
@@ -157,7 +163,7 @@ def getBlockHeight():
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(allNodes[int(threadNames[0])], username=user, key_filename=filepath)
+        client.connect("54.151.28.66", username=user, key_filename=filepath)
         stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli getblockcount')
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
@@ -190,14 +196,7 @@ def isSynced(name):
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from isSynced")
         sendText(f"Error: {error} occurred, go check your terminal")
-    #try to fix this for nexxt time by sending a startup sync command
-    try:
-        writeToLog(f">Error when checking sync, sending startup command\n")
-        startup(name)
-    except:
-        writeToLog(f">Error when sending startup command\n")
-    finally:
-        return False
+
 
 #Tell threads to report their sync status
 def listSync():
@@ -207,7 +206,7 @@ def listSync():
 #remove duplicate peers
 def removeDuplicates():
     try:
-        writeToLog("Starting new duplicate removal round\n")
+        #writeToLog("Starting new duplicate removal round\n")
         previousPeers = []
         for name, info in syncedNodes.items():
             if info[0] == True:
@@ -260,19 +259,6 @@ def createConfigCycle():
             if int(n) != i:
                 addConfigPeer(n, allNodes[i])
 
-#Send startup command to a node that may have shut down for some reason
-def startup(name):
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
-        stdin, stdout, stderr = client.exec_command(startupCommand)
-        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-            time.sleep(0.2)
-    except:
-        print(f"An error occurred: {sys.exc_info()[0]}, returning from startup")
-        sendText("Error occurred, go check your terminal")
-        raise
 
 #Check to see if all nodes are synced then add them to each other as peers. Then, loop through on inverval and remove excess duplicates from the network
 def managePeers():
@@ -299,38 +285,48 @@ def managePeers():
             failCounter += 1
             if failCounter > 2:
                 if textenabled == True:
-                    sendTextInstant("Manage peers thread failed 3 times, shutting down")
+                    sendTextSuccess("Manage peers thread failed 3 times, shutting down")
                 return
 
-########################Worker thread functions
+"""
+###########################
+Functions for the worker threads
+###########################
+"""
 
-#list all nodes - TODO list only active
 def listNodes():
+"""
+List all active nodes
+"""
     print(">All Nodes: ")
     for n in threadNames:
         print(f"\t Node '{n}' ({allNodes[int(n)]})")
 
-#write all peers known
 def writePeers():
+"""
+Write all peers known to the log file
+"""
     try:
         global prevPeers, writeCounter
-        if sorted(prevPeers.values()) == sorted(nodePeers.values()):
+        if sorted(prevPeers.values()) == sorted(nodePeers.values()):            ### For sure the last known one was the same as this current -> dont write
             writeToLog(f">No change as of {datetime.datetime.now()} \n")
             return
         prevPeers = nodePeers.copy()
         height = getBlockHeight()
-        writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}, block height {height}: \n")
+        writeToLog(f">All Nodes and peers as of {datetime.datetime.now()}, block height {height}: \n\t[")
         prev = []
+        prevIP = []
         dupeCounter = 0
         totalCounter = 0
         for n in threadNames:
             writeToLog(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}): \n")
-            writeCounter = 0 #dont want other threads running this while we're still in it so keep resetting while this function runs
-            if n in nodePeers:
+            writeCounter = 0                                                    ### dont want other threads running this while we're still in it so keep resetting while this function runs
+            if n in nodePeers:                                                  ### Write every peer known for every node and track how many unique IPs & IP:Port pairs are known
                 counter = 1
                 for p in nodePeers[n]:
                     writeToLog(f"\t\t{counter}: {p}")
-                    if p.split(":")[0] in allNodes:
+                    ip = p.split(":")[0]
+                    if ip in allNodes:
                         writeToLog("*")
                     writeToLog("\n")
                     counter+=1
@@ -339,17 +335,22 @@ def writePeers():
                         dupeCounter+=1
                     else:
                         prev.append(p)
-        writeToLog(f"\tUNIQUE peers as of {datetime.datetime.now()}, block height {height}. ({len(prev)} total): \n")
-        for p in prev:
+                    if not ip in prevIP:
+                        prevIP.append(ip)
+        writeToLog(f"\t]\n\tUNIQUE peers as of {datetime.datetime.now()}, block height {height}. ({len(prev)} total): \n\t[")
+        prev = sorted(prev)
+        for p in prev:                                                          ### Write unique nodes
             writeToLog(f"\t\t-{p}\n")
-        writeToLog(f">{totalCounter} total Nodes with {dupeCounter} duplicates and {len(prev)} uniques at height {height}\n")
+        writeToLog(f"\t]\n>{totalCounter} total peers with {dupeCounter} duplicates and {len(prev)} uniques at height {height} ({len(prevIP)} unique IPs)\n")
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from writePeers")
         sendText("Error occurred, go check your terminal")
-        return
+        raise
 
-#list all peers known
 def listPeers():
+"""
+List all peers known and call to write them to log
+"""
     print(f">All Nodes and peers as of {datetime.datetime.now()}: ")
     for n in threadNames:
         print(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}):")
@@ -360,8 +361,10 @@ def listPeers():
                 counter+=1
     writePeers()
 
-#update the list of known peers for this node having already gotten output from a getpeerinfo command
 def updatePeerList(name, output):
+"""
+Update the list of known peers for this node using output from a getpeerinfo command
+"""
     global nodePeers
     oldList = nodePeers
     output = clean(output)
@@ -369,11 +372,13 @@ def updatePeerList(name, output):
     peers = []
     for i in range(0, len(test)):
         if test[i] == "addr":
-            peers.append(test[i+2])
+            peers.append(test[i+2])             ### List example after clean [..., 'addr', '', 'IP', ..., 'addr', '', 'IP']
     nodePeers[name] = peers
 
-#update the peerlist without having received a getpeerinfo command
 def updatePeerListAuto(name):
+"""
+Update the peerlist without having received the output of a getpeerinfo command - Gets the output of one and then makes the call to parse it
+"""
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -382,37 +387,36 @@ def updatePeerListAuto(name):
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
         lines = stdout.readlines()
-        updatePeerList(name, ''.join(lines))
+        updatePeerList(name, ''.join(lines))            ### Parse the output
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from updatePeerListAuto")
         sendText("Error occurred, go check your terminal")
-        return
+        raise
 
-#get peer address from a cmd and return the final command to be run by a node
 def getPeerAddr(cmd, flag, name):
+"""
+Get peer address from a command and return the final command to be run by a node. Returns blank in case of an error so the caller knows to return
+"""
     final = ""
     pieces = cmd.split(" ")
     idx = pieces.index(flag)
-    #no peer number specified
-    if not idx < len(pieces) - 1:
+    if not idx < len(pieces) - 1:           ### No peer number specified
         print(f">Error getting peer number specified by the {flag} flag. Aborting command with code 1: " + cmd)
         return final
     peerNum = pieces[idx + 1]
-    #peer number includes non-digits
-    if not peerNum.isdigit():
+    if not peerNum.isdigit():               ### Peer number includes non-digits
         print(f">Error getting peer number specified by the {flag} flag. Aborting command with code 2: " + cmd)
         return final
-    #get peer in or outside speedup network
-    if flag == "-p":
+    if flag == "-p":                        ### Get peer from list of known peers of nodes in the speedup network
         if int(peerNum) < len(nodePeers[name]):
             peerNum = nodePeers[name][int(peerNum)]
-        else:
+        else:                               ### Node isn't in our list of peers
             print(f">Error getting peer number specified by the {flag} flag. Aborting command with code 3: " + cmd)
             return final
-    if flag == "-p2":
+    if flag == "-p2":                       ### Get node from IPs of nodes in our network
         if int(peerNum) < len(allNodes):
             peerNum = allNodes[int(peerNum)]
-        else:
+        else:                               ### Node desired is outside the length of the list
             print(f">Error getting peer number specified by the {flag} flag. Aborting command with code 4: " + cmd)
             return final
     pieces[idx + 1] = peerNum
@@ -420,10 +424,11 @@ def getPeerAddr(cmd, flag, name):
     final = ' '.join(pieces)
     return final
 
-#Process command, return response from node
 def processCommand(chan, cmd, name, addr):
-    #determine if a custom waiting duration was set
-    waittime = 1
+"""
+Process command, return response from node
+"""
+    waittime = 1                            ### determine if a custom waiting duration was set
     if " -t " in cmd:
         pieces = cmd.split(" ")
         timePos = pieces.index("-t")
@@ -433,28 +438,24 @@ def processCommand(chan, cmd, name, addr):
                 pieces.pop(timePos + 1)
         pieces.pop(timePos)
         cmd = ' '.join(pieces)
-    #special remove all peers command
-    if "removeallpeerscode" in cmd:
+    if "removeallpeerscode" in cmd:         ### special remove all peers command
         removeAllPeers(name)
         return
-    #special check sync status command:
-    if "checksync" in cmd:
+    if "checksync" in cmd:                  ### special check sync status command:
         synced = isSynced(name)
         message = (f"Node {name} synced: {synced} with {syncedNodes[name][1]} connections")
         print(message)
         writeToLog(message + "\n")
         updatePeerListAuto(name)
         return
-    #to convert peer number to ip address - jank i know. p converts peer outside network, p2 connects peer in speedup network
-    if " -p " in cmd:
+    if " -p " in cmd:                       ### Try to convert peer number to ip address - return if it fails
         cmd = getPeerAddr(cmd, "-p", name)
         if cmd == "":
             return
-    if " -p2 " in cmd:
+    if " -p2 " in cmd:                      ### Need 2 to specify the right flag
         cmd = getPeerAddr(cmd, "-p2", name)
         if cmd == "":
             return
-    #send the command and receive the response
     try:
         chan.send(cmd + '\n')
         time.sleep(waittime)
@@ -463,13 +464,10 @@ def processCommand(chan, cmd, name, addr):
         message += ("\n>______________________________________________________ \n")
         output = resp.decode('ascii').split(',')
         message += (''.join(output))
-        #if the command was getpeerinfo then we want to update the peerlist
-        if "getpeerinfo" in cmd:
+        if "getpeerinfo" in cmd:             ### If the command was getpeerinfo then we want to update the peerlist
             updatePeerList(name, ''.join(output))
-        #if the command to add or disconnect a node update the peer list using the no-prior output function
         if "addnode" in cmd or "disconnectnode" in cmd:
             updatePeerListAuto(name)
-        #record received messages to logfile
         print(message)
         writeToLog(message)
     except:
@@ -478,58 +476,52 @@ def processCommand(chan, cmd, name, addr):
     finally:
         return
 
-#Wait for commands in buffer and remove them if its for this thread
 def waitForWork(node, chan):
+"""
+Wait for commands in buffer and remove them if its for this thread - Update peerlist and write it to the log on the correct frequency
+"""
     global writeCounter
     updateCounter = 0
     while True:
         try:
             positionCounter = 0
-            #search command buffer for one meant for me
-            for cmd in commandBuffer:
+            for cmd in commandBuffer:               ### Search command buffer for one meant for me
                 if node == cmd.split(" ")[0]:
                     commandBuffer.pop(positionCounter)
                     return cmd[len(node):]
                 else:
                     positionCounter += 1
-            time.sleep(1)
+            time.sleep(1)                           ### Update counters every second that passes
             updateCounter += 1
             writeCounter += 1
-            #auto update peerlist
-            if updateCounter >= updateFreq:
-                #print(f"Node {name} updating peerlist")
+            if updateCounter >= updateFreq:         ### Auto update peerlist
                 updateCounter = 0
                 updatePeerListAuto(node)
             if writeCounter == writeFreq:
                 writeCounter = 0
                 writePeers()
-            if writeCounter > writeFreq: #thread sync error possible
+            if writeCounter > writeFreq:            ### Thread sync error possible
                 writeCounter = 0
         except:
             raise
 
-#Main function of a thread - wait for commands and execute after creating channel
 def work(addr, name):
-    #Paramiko connection magic
-    client = paramiko.SSHClient()
+"""
+Main function of a thread - wait for commands and execute after creating channel
+"""
+    client = paramiko.SSHClient()           ### Paramiko connection magic
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    #Connection  building - Use the Elastic IP to connect - TODO add other nodes
     print(">Node '" + name + "' connecting to " + str(addr))
     client.connect(addr, username=user, key_filename=filepath)
-    #create persistent shell and move into correct directory, start up zcash
-    chan = client.invoke_shell()
+    chan = client.invoke_shell()            ### Create persistent shell and move into correct directory
     chan.send("cd zcash \n")
     time.sleep(0.1)
-    resp = chan.recv(999999) #don't use this, its garbage from node startup
-    chan.send(startupCommand + " \n")
-    time.sleep(0.2)
-    resp = chan.recv(999999)
+    resp = chan.recv(999999)                ### Don't use this, its garbage node diagnostics from the initial connection
     if not isSynced(name):
         print(f"\t>Node '{name}' is still syncing")
     else:
         print(f"\t>Node '{name}' is synced with {syncedNodes[name][1]} connections")
-    #loop for commands
-    while True:
+    while True:                             ### loop for commands
         try:
             threadsRunning[int(name)] = 0
             cmd = waitForWork(name, chan)
@@ -540,22 +532,31 @@ def work(addr, name):
         except:
             print(f"Fatal error, shutting down thread {name}")
             break
-    #Done working, time to close but first reduce write frequency since this thread isnt contributing to the writeCounter
     global writeFreq
-    base = writeFreq/len(threadNames)
+    base = writeFreq/len(threadNames)       ### Done working, time to close but first reduce write frequency since this thread isnt contributing to the writeCounter
     writeFreq = base * (len(threadNames) - 1)
     threadNames.remove(name)
     threadsRunning[int(name)] = 0
-    stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli clearbanned\n')
-    while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
-        time.sleep(0.2)
-    print(">" + name + " closed.")
-    client.close()
+    try:
+        stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli clearbanned\n')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+    except:
+        writeToLog(f">Error with node {name} clearing ban list")
+    finally:
+        print(">" + name + " closed.")
+        client.close()
 
-########################User thread functions
+"""
+###########################
+Functions for the user thread to handle inputs
+###########################
+"""
 
-#Parse message looking for add or remove peer
 def parseMessage(input):
+"""
+Parse message looking for add or remove peer
+"""
     pieces = input.split(" ")
     if "-addpeer" in pieces:
         idx = pieces.index("-addpeer")
@@ -577,13 +578,14 @@ def parseMessage(input):
             return "errorcode"
     return input
 
-#Parse parameters of input
 def parseInput(input):
+"""
+Parse parameters of input
+"""
     pieces = input.split(" ")
     messagePos = 0
     message = ""
-    #find the message input
-    for p in pieces:
+    for p in pieces:               ### find the message input
         if p == "-c" and messagePos < len(pieces) - 1:
             message = ' '.join(pieces[messagePos+1:])
             break
@@ -595,8 +597,7 @@ def parseInput(input):
     message = parseMessage(message)
     if message == "errorcode":
         return
-    #determine receiver nodes
-    if pieces[0] == "-all":
+    if pieces[0] == "-all":         ### Determine receiver nodes
         sendALL(message)
     else:
         for i in range (0, messagePos):
@@ -605,8 +606,10 @@ def parseInput(input):
             else:
                 print(">Error, invalid target, skipping...")
 
-#Handle User Input
 def handleInput(input):
+"""
+Handle User Input - returns true unless the user wants to exit
+"""
     input = input.strip()
     input = input.lower()
     if input == "q" or input == "quit":
@@ -627,12 +630,18 @@ def handleInput(input):
         listSync()
     elif input == "-printsyncednodeinfo":
         print(syncedNodes)
+    elif input == "-stopnodes":
+        stopAllNodes()
+    elif input == "-startnodes":
+        startAllNodes()
     else:
         parseInput(input)
     return True
 
-#Get User Input
 def getInput():
+"""
+Get the user input and try to process it. Don't restart this thread until the others report they're done running
+"""
     time.sleep(len(allNodes)/2)
     running = True
     print(">Type -c to see command list")
@@ -648,61 +657,173 @@ def getInput():
                 if t == 1:
                     waiting = True
             if waiting == True:
-                #print(">User thread waiting on node threads. Sleeping...")
                 time.sleep(1)
                 counter += 1
             if counter >= 30:
                 break
     print(">User thread exited.")
 
-#Create and start threads
+"""
+###########################
+Functions for managing experiment runs and helpers for starting/stopping nodes
+###########################
+"""
+
+def stopNode(name):
+"""
+Send rpc stop command to a node
+"""
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command(f"zcash/src/zcash-cli stop")
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from stopNode")
+        raise
+
+def startup(name):
+"""
+Send rpc startup command to a node
+"""
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command(startupCommand)
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+    except:
+        print(f"An error occurred: {sys.exc_info()[0]}, returning from startup")
+        sendText("Error occurred, go check your terminal")
+        raise
+
+def stopAllNodes():
+"""
+Turn off all nodes and make sure by sending the sync command and ensuring they all report false
+"""
+    try:
+        tries = 0
+        while True:
+            success = True
+            for n in threadNames:
+                stopNode(n)
+                isSynced(n)
+            for n in syncedNodes:
+                if syncedNodes[n][0] == True:
+                    success = False
+                    break
+            tries += 1
+            if success == True:
+                writeToLog(f">All nodes reported disconnected as of {datetime.datetime.now()}\n")
+                break
+            elif tries > 3:
+                writeToLog(f">Not all nodes reported disconnected as of {datetime.datetime.now()}\n")
+                for i in range(0, 10):      ### Spam Text since its probably important
+                    sendTextSuccess("Wake up, fatal error in stopping nodes, experiment may be jeopardized")
+                    time.sleep(1.2)
+                break
+    except:
+        success = sendTextSuccess("Wake up, fatal error in starting nodes, experiment may be jeopardized")        ### Attempt to send a text instantly, bypassing the time checks
+        if not success:
+            writeToLog(f">Experiment jeopardized after this time")
+        time.sleep(1.2)
+        raise
+
+def startAllNodes():
+"""
+Turn all nodes on by broadcasting the startup command 3 times, no way to know in real-time if it succeeds since even after startup the sync takes ~5 minutes
+"""
+    try:
+        tries = 0
+        while tries < 3:
+            for n in threadNames:
+                startup(n)
+            tries += 1
+        return
+    except:
+        success = sendTextSuccess("Wake up, fatal error in starting nodes, experiment may be jeopardized")        ### Attempt to send a text instantly, bypassing the time checks
+        if not success:
+            writeToLog(f">Experiment jeopardized after this time")
+        time.sleep(1.2)
+        raise
+
+def idle(experimentTime):
+"""
+Wait for experiment time. Checks every 5 minutes and writes to log so we know its still running
+"""
+    lastflip = datetime.datetime.now()
+    while(total_seconds < experimentTime): ### Only want to check every 5 minutes since shorter than that isn't a good experiment anyway
+        time.sleep(300)
+        time_delta = (datetime.datetime.now() - lastflip)
+        total_seconds = round(time_delta.total_seconds())
+        writeToLog(f">{total_seconds} seconds since last startup, {experimentTime - total_seconds} to go until next shutdown\n")
+
+def manageRun():
+"""
+Turn on all nodes and let them run for the time specified in the -e flag. Afterwards, turn off nodes for that period of time. Repeat. Used for gathering data about network propagation with/without speedup nodes on
+"""
+    writeToLog(f"Experiment time set to {experimentTime/60} minutes\n")
+    try:
+        iteration = 1
+        while True:     ### Do forever - Start/stop every N minutes
+            writeToLog(f"Sending startup command to all nodes at {datetime.datetime.now()}. Beginning iteration {iteration}. Sleeping for {experimentTime} seconds after startup\n")
+            startAllNodes()
+            idle(experimentTime)
+            writeToLog(f"Sending shutdown command to all nodes at {datetime.datetime.now()}. Ending iteration {iteration}.\n")
+            stopAllNodes()
+            idle(experimentTime)
+            iteration += 1
+    except:
+        writeToLog(f"Exception occurred at {datetime.datetime.now()}, experiment thread is shutting down\n")
+    finally:
+        writeToLog(f"Experiment thread shut down at {datetime.datetime.now()}\n")
+        return
+
 def main():
+"""
+Parse arguments and start all the threads
+"""
     parser = argparse.ArgumentParser()
     parser.add_argument("-l", "--logfile", help="Record to logfile", action = "store_true", default = False)
     parser.add_argument("-i", "--input", help="File of IPs to bind with", action = "store", dest = "inputFile")
     parser.add_argument("-fn", "--namefilter", help="Name (key) to filter EC2 instances by", action = "store", default = "tag-key", dest = "namefilter")
     parser.add_argument("-fv", "--valuefilter", help="Value to filter EC2 instances by", action = "store", default = "ZcashNode", dest = "valuefilter")
     parser.add_argument("-t", "--text", help="get text notifications if exceptions are thrown", action = "store_true", default = False)
-    parser.add_argument("-d", "--duplicates", help="max duplicates nodes in the network as peers of speedup nodes", action = "store", default = 2, dest = "maxDupe")
+    parser.add_argument("-d", "--duplicates", help="max duplicates nodes in the network as peers of speedup nodes", action = "store", default = 2, dest = "maxDupe", type = int)
+    parser.add_argument("-e", "--experimentTime", help="How often to start/stop nodes in minutes", action = "store", default = -1, dest = "experimentTime", type = int)
     args = parser.parse_args()
-    #create and start threads
-    global threadNames, nodePeers, writeFreq, allNodes, twilioClient, lastMessage, logfileOn, logfileName, inputFileName, textenabled, maxDuplicates
-    #get ips of instances and start thread channels
-    allNodes = getNodeIPs(args.namefilter, args.valuefilter)
+    global threadNames, nodePeers, writeFreq, allNodes, twilioClient, lastMessage, logfileOn, logfileName, textenabled, maxDuplicates, experimentTime
+    allNodes = getNodeIPs(args.namefilter, args.valuefilter)        ### get ips of instances and start thread channels
     if len(allNodes) == 0:
         print("No IPs found, that the tags arguments create the proper filter and that your nodes are running")
         return
-    #turn on logfile and set its name
-    if args.logfile:
+    if args.logfile:            ### turn on logfile and set its name
         logfileOn = True
         time = datetime.datetime.now()
         logfileName = f'{logfileBase}-{time:%Y-%m-%d-%H%M%S}.txt'
         print("Saving logfile under " + logfileName)
         open(logfileName, "x")
-    #check input file and add all IPs in it to the nodes config files
-    if args.inputFile:
-        inputFileName = args.inputFile
-        print(f'Input file: {inputFileName}')
+    if args.inputFile:          ### Input file - list of IPs of known peers which is parsed and added to the ~/.zcash/zcash.cof file in the nodes
         try:
-            with open(inputFileName, "r") as f:
-                addrs = f.readlines()
-                #build temp channels for bulk adding to config file
-                for n in allNodes:
+            with open(args.inputFile, "r") as f:
+                addrs = f.readlines()       ### build temp channels for bulk adding to config file
+                message = ""
+                for a in addrs:         ### create one long string and add it to their config files
+                    ip = a.strip()
+                    message += f"addnode={ip}\n"
+                for n in allNodes:      ### echo to all config files
                     print(f"Adding addresses to node at {n}")
                     client = paramiko.SSHClient()
                     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     client.connect(n, username=user, key_filename=filepath)
-                    #create one long string and add it to their config files
-                    message = ""
-                    for a in addrs:
-                        ip = a.strip()
-                        message += f"addnode={ip}\n"
                     stdin, stdout, stderr = client.exec_command(f'echo "{message}" >> ~/.zcash/zcash.conf')
                     client.close()
         except:
-            print(f"Something went wrong adding nodes from input text to config files. Error: {sys.exc_info()[0]}")
-    #text updates if an exception is thrown
-    if args.text:
+            print(f"Something went wrong adding nodes from input text to config files. Error: {sys.exc_info()[0]}. Continuing execution")
+    if args.text:           ### text updates if an exception is thrown
         textenabled = True
         aFile = open(twilioAuthPath, 'r')
         tAuth = aFile.readlines()
@@ -711,28 +832,27 @@ def main():
         sendText(f"Starting up node monitor at {datetime.datetime.now()}")
     else:
         print("Text reminders disabled this run")
-    #max duplicates allowed
-    maxDuplicates = int(args.maxDupe)
+    maxDuplicates = args.maxDupe        ### max duplicates allowed
+    experimentTime = args.experimentTime * 60       ### Set time between shutdown/startup
     print(f"{maxDuplicates} maximum duplicates of a peer allowed")
-    count = 0
-    for ip in allNodes:
-        name = str(count)
-        t = threading.Thread(target=work, args=(ip, name,))
+    for i in range(0, len(allNodes)):     ### create and start threads
+        name = str(i)
+        t = threading.Thread(target=work, args=(allNodes[i], name,))
         t.daemon = True
         t.start()
         threadNames.add(name)
-        threadsRunning.append(1)
+        threadsRunning.append(t)
         nodePeers[name] = []
-        count+=1
     threadNames = sorted(threadNames, key = int)
-    writeFreq *= len(threadNames) #or else it progresses at N times too fast
-    #starting user thread, only non-daemon
-    UserThread = threading.Thread(target = getInput)
+    writeFreq *= len(threadNames)                               ### or else it progresses at N times too fast
+    UserThread = threading.Thread(target = getInput)            ### starting user thread, only non-daemon
     UserThread.start()
-    #Peerlist manipulator thread
-    peerThread = threading.Thread(target = managePeers)
+    peerThread = threading.Thread(target = managePeers)         ### Peerlist manipulator thread
     peerThread.daemon = True
     peerThread.start()
+    if experimentTime > 0:                                      ### Experiment management thread
+        experimentThread = threading.Thread(target = manageRun)
+        experimentThread.daemon = True
+        experimentThread.start()
 
-#run main
-main()
+main()      ### run Main
