@@ -49,9 +49,9 @@ Utility functions
 """
 
 def clean(input):
-"""
-clean a string of brackets, newline characters, colons and turns sequential "" into a single one - For cleaning the output of a getpeerinfo call
-"""
+    """
+    clean a string of brackets, newline characters, colons and turns sequential "" into a single one - For cleaning the output of a getpeerinfo call
+    """
     input = input.replace("{", "")
     input = input.replace("}", "")
     input = input.replace("[", "")
@@ -63,29 +63,29 @@ clean a string of brackets, newline characters, colons and turns sequential "" i
     return input
 
 def flushBuffer():
-"""
-clears buffer of any wrongly formatted and unused commands or ones sent to dead threads
-"""
+    """
+    clears buffer of any wrongly formatted and unused commands or ones sent to dead threads
+    """
     commandBuffer.clear()
     print(">Buffer Flushed")
 
 def sendALL(input):
-"""
-send command to all nodes
-"""
+    """
+    send command to all nodes
+    """
     for n in threadNames:
         commandBuffer.append(n + " " + input)
 
 def sendOne(node, input):
-"""
-target a node with a command
-"""
+    """
+    target a node with a command
+    """
     commandBuffer.append(node + " " + input)
 
 def getNodeIPs(name, value):
-"""
-get ip addresses of nodes through boto using filters given from cmd line
-"""
+    """
+    get ip addresses of nodes through boto using filters given from cmd line
+    """
     ips = []
     ec2 = boto3.resource('ec2')
     instances = ec2.instances.filter(Filters=[{'Name': name,'Values': [value]}, {'Name' : 'instance-state-name','Values' : ['running']}])
@@ -94,9 +94,9 @@ get ip addresses of nodes through boto using filters given from cmd line
     return ips
 
 def validTarget(node):
-"""
-check if command targets a valid node
-"""
+    """
+    check if command targets a valid node
+    """
     valid = False
     for n in threadNames:
         if node == n:
@@ -105,9 +105,9 @@ check if command targets a valid node
     return valid
 
 def sendText(message):
-"""
-Check if it has been 5 minutes since the last text, if so send, else let us retry after a minute
-"""
+    """
+    Check if it has been 5 minutes since the last text, if so send, else let us retry after a minute
+    """
     global lastMessage, textlock
     if textenabled == False or textlock == True:
         return
@@ -125,9 +125,9 @@ Check if it has been 5 minutes since the last text, if so send, else let us retr
     textlock = False
 
 def sendTextSuccess(message):
-"""
-actually send a text and see if it succeeded or not
-"""
+    """
+    actually send a text and see if it succeeded or not
+    """
     try:
         twilioClient.messages.create(to="+13107795882", from_="+12029337899", body=message)
         return True
@@ -136,18 +136,18 @@ actually send a text and see if it succeeded or not
         return False
 
 def writeToLog(input):
-"""
-write to logfile
-"""
+    """
+    write to logfile
+    """
     if logfileOn:
         f = open(logfileName, "a")
         f.write(input)
         f.close()
 
 def addPeer(name, addr):
-"""
-add a peer to a node
-"""
+    """
+    add a peer to a node
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -155,6 +155,7 @@ add a peer to a node
         stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli addnode {addr} add')
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
     except:
         error = sys.exc_info()[0]
         print(f"An error occurred: {error}, returning from addPeer")
@@ -162,14 +163,17 @@ add a peer to a node
         raise
 
 def addConfigPeer(name, addr):
-"""
-add a peer to a node's .conf file so it'll attempt to connect next startup
-"""
+    """
+    add a peer to a node's .conf file so it'll attempt to connect next startup
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(allNodes[int(name)], username=user, key_filename=filepath)
         stdin, stdout, stderr = client.exec_command(f'echo "addnode={addr}" >> ~/.zcash/zcash.conf')
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        client.close()
     except:
         error = sys.exc_info()[0]
         print(f"An error occurred: {error}, returning from addConfigPeer")
@@ -177,18 +181,18 @@ add a peer to a node's .conf file so it'll attempt to connect next startup
         raise
 
 def removeAllPeers(node):
-"""
-send commands to buffer to remove all node peers - prints & runs only when called by the CLI. Warning - slow and messy
-"""
+    """
+    send commands to buffer to remove all node peers - prints & runs only when called by the CLI. Warning - slow and messy
+    """
     print(f">Pushing commands to remove all peers from node {node}, {len(nodePeers[node])} found")
     for ip in nodePeers[node]:
         commandBuffer.append(f"{node} ./src/zcash-cli disconnectnode {ip}")
     return
 
 def getBlockHeight():
-"""
-Get blockchain height at this time
-"""
+    """
+    Get blockchain height at this time
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -196,21 +200,23 @@ Get blockchain height at this time
         stdin, stdout, stderr = client.exec_command(f'zcash/src/zcash-cli getblockcount')
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
         lines = ''.join(stdout.readlines())
         lines = lines.strip()
         if lines.isdigit() == True:
-            return lines
+            return int(lines)
         else:
-            return "Error getting blockheight"
+            return -1
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from getBlockHeight")
         sendText(f"Error: {error} occurred, go check your terminal")
         raise
+        return -1
 
 def isSynced(name):
-"""
-check if this node is synced yet, and how many peers it has
-"""
+    """
+    check if this node is synced yet, and how many peers it has
+    """
     try:
         syncedNodes[name] = (False, 0)
         client = paramiko.SSHClient()
@@ -219,6 +225,7 @@ check if this node is synced yet, and how many peers it has
         stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getconnectioncount\n')
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
         lines = ''.join(stdout.readlines())
         output = lines.split('\n')
         if len(output) >= 2 and output[-2].isdigit():                           ### second to last line, up to the second to last char which are always "\r"
@@ -229,9 +236,9 @@ check if this node is synced yet, and how many peers it has
         sendText(f"Error: {error} occurred, go check your terminal")
 
 def listSync():
-"""
-Tell threads to report their sync status
-"""
+    """
+    Tell threads to report their sync status
+    """
     for n in threadNames:
         commandBuffer.append(f"{n} checksync")
 
@@ -242,9 +249,9 @@ Functions for the peer manager thread
 """
 
 def removeDuplicates():
-"""
-Remove any copies of peers that have appeared more than the specified number of times within the networrk. E.g. peer A appears as a peer of 6 nodes but we specified 5 max, so we remove peer A from 1 node
-"""
+    """
+    Remove any copies of peers that have appeared more than the specified number of times within the networrk. E.g. peer A appears as a peer of 6 nodes but we specified 5 max, so we remove peer A from 1 node
+    """
     try:
         previousPeers = []
         for name, info in syncedNodes.items():
@@ -283,27 +290,27 @@ Remove any copies of peers that have appeared more than the specified number of 
         raise
 
 def createCycle():
-"""
-add all peers of speedup network to each other
-"""
+    """
+    add all peers of speedup network to each other
+    """
     for n in threadNames:
         for i in range(len(allNodes)):
             if int(n) != i:
                 addPeer(n, allNodes[i])
 
 def createConfigCycle():
-"""
-Add all peers of speedup network to each other in the config file
-"""
+    """
+    Add all peers of speedup network to each other in the config file
+    """
     for n in threadNames:
         for i in range(len(allNodes)):
             if int(n) != i:
                 addConfigPeer(n, allNodes[i])
 
 def managePeers():
-"""
-Check to see if all nodes are synced then add them to each other as peers. Then, loop through on inverval and remove excess duplicates from the network
-"""
+    """
+    Check to see if all nodes are synced then add them to each other as peers. Then, loop through on inverval and remove excess duplicates from the network
+    """
     createdCycle = False
     failCounter = 0
     while True:
@@ -314,13 +321,13 @@ Check to see if all nodes are synced then add them to each other as peers. Then,
                     if i[0] != True:
                         allsynced = False
                         break
-                if len(syncedNodes) != len(allNodes):
+                if len(syncedNodes) != len(threadNames):
                     allsynced = False
                 if allsynced == True:
                     createConfigCycle()
                     createCycle()
                     createdCycle = True
-                    writeToLog(f">Created cycle between nodes at {datetime.datetime.now()}")
+                    writeToLog(f">Created cycle between nodes at {datetime.datetime.now()}\n")
             removeDuplicates()
             time.sleep(30)
         except:
@@ -337,17 +344,17 @@ Functions for the worker threads
 """
 
 def listNodes():
-"""
-List all active nodes
-"""
+    """
+    List all active nodes
+    """
     print(">All Nodes: ")
     for n in threadNames:
         print(f"\t Node '{n}' ({allNodes[int(n)]})")
 
 def writePeers():
-"""
-Write all peers known to the log file
-"""
+    """
+    Write all peers known to the log file
+    """
     try:
         global prevPeers, writeCounter
         if sorted(prevPeers.values()) == sorted(nodePeers.values()):            ### For sure the last known one was the same as this current -> dont write
@@ -390,9 +397,9 @@ Write all peers known to the log file
         raise
 
 def listPeers():
-"""
-List all peers known and call to write them to log
-"""
+    """
+    List all peers known and call to write them to log
+    """
     print(f">All Nodes and peers as of {datetime.datetime.now()}: ")
     for n in threadNames:
         print(f"\tNode '{n}' ({allNodes[int(n)]}) peers ({len(nodePeers[n])}):")
@@ -404,9 +411,9 @@ List all peers known and call to write them to log
     writePeers()
 
 def updatePeerList(name, output):
-"""
-Update the list of known peers for this node using output from a getpeerinfo command
-"""
+    """
+    Update the list of known peers for this node using output from a getpeerinfo command
+    """
     global nodePeers
     oldList = nodePeers
     output = clean(output)
@@ -418,9 +425,9 @@ Update the list of known peers for this node using output from a getpeerinfo com
     nodePeers[name] = peers
 
 def updatePeerListAuto(name):
-"""
-Update the peerlist without having received the output of a getpeerinfo command - Gets the output of one and then makes the call to parse it
-"""
+    """
+    Update the peerlist without having received the output of a getpeerinfo command - Gets the output of one and then makes the call to parse it
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -428,6 +435,7 @@ Update the peerlist without having received the output of a getpeerinfo command 
         stdin, stdout, stderr = client.exec_command('zcash/src/zcash-cli getpeerinfo \n')
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
         lines = stdout.readlines()
         updatePeerList(name, ''.join(lines))                                    ### Parse the output
     except:
@@ -436,9 +444,9 @@ Update the peerlist without having received the output of a getpeerinfo command 
         raise
 
 def getPeerAddr(cmd, flag, name):
-"""
-Get peer address from a command and return the final command to be run by a node. Returns blank in case of an error so the caller knows to return
-"""
+    """
+    Get peer address from a command and return the final command to be run by a node. Returns blank in case of an error so the caller knows to return
+    """
     final = ""
     pieces = cmd.split(" ")
     idx = pieces.index(flag)
@@ -467,9 +475,9 @@ Get peer address from a command and return the final command to be run by a node
     return final
 
 def processCommand(chan, cmd, name, addr):
-"""
-Process command, return response from node
-"""
+    """
+    Process command, return response from node
+    """
     waittime = 1                                                                ### determine if a custom waiting duration was set
     if " -t " in cmd:
         pieces = cmd.split(" ")
@@ -519,9 +527,9 @@ Process command, return response from node
         return
 
 def waitForWork(node, chan):
-"""
-Wait for commands in buffer and remove them if its for this thread - Update peerlist and write it to the log on the correct frequency
-"""
+    """
+    Wait for commands in buffer and remove them if its for this thread - Update peerlist and write it to the log on the correct frequency
+    """
     global writeCounter
     updateCounter = 0
     while True:
@@ -548,9 +556,9 @@ Wait for commands in buffer and remove them if its for this thread - Update peer
             raise
 
 def work(addr, name):
-"""
-Main function of a thread - wait for commands and execute after creating channel
-"""
+    """
+    Main function of a thread - wait for commands and execute after creating channel
+    """
     client = paramiko.SSHClient()                                               ### Paramiko connection magic
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     print(">Node '" + name + "' connecting to " + str(addr))
@@ -596,9 +604,9 @@ Functions for the user thread to handle inputs
 """
 
 def parseMessage(input):
-"""
-Parse message looking for add or remove peer
-"""
+    """
+    Parse message looking for add or remove peer
+    """
     pieces = input.split(" ")
     if "-addpeer" in pieces:
         idx = pieces.index("-addpeer")
@@ -621,9 +629,9 @@ Parse message looking for add or remove peer
     return input
 
 def parseInput(input):
-"""
-Parse parameters of input
-"""
+    """
+    Parse parameters of input
+    """
     pieces = input.split(" ")
     messagePos = 0
     message = ""
@@ -649,9 +657,9 @@ Parse parameters of input
                 print(">Error, invalid target, skipping...")
 
 def handleInput(input):
-"""
-Handle User Input - returns true unless the user wants to exit
-"""
+    """
+    Handle User Input - returns true unless the user wants to exit
+    """
     input = input.strip()
     input = input.lower()
     if input == "q" or input == "quit":
@@ -681,9 +689,9 @@ Handle User Input - returns true unless the user wants to exit
     return True
 
 def getInput():
-"""
-Get the user input and try to process it. Don't restart this thread until the others report they're done running
-"""
+    """
+    Get the user input and try to process it. Don't restart this thread until the others report they're done running
+    """
     time.sleep(len(allNodes)/2)
     running = True
     print(">Type -c to see command list")
@@ -712,9 +720,9 @@ Functions for managing experiment runs and helpers for starting/stopping nodes
 """
 
 def stopNode(name):
-"""
-Send rpc stop command to a node
-"""
+    """
+    Send rpc stop command to a node
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -722,14 +730,15 @@ Send rpc stop command to a node
         stdin, stdout, stderr = client.exec_command(f"zcash/src/zcash-cli stop")
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from stopNode")
         raise
 
-def startup(name):
-"""
-Send rpc startup command to a node
-"""
+def startupNode(name):
+    """
+    Send rpc startup command to a node
+    """
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -737,15 +746,16 @@ Send rpc startup command to a node
         stdin, stdout, stderr = client.exec_command(startupCommand)
         while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
             time.sleep(0.2)
+        client.close()
     except:
         print(f"An error occurred: {sys.exc_info()[0]}, returning from startup")
         sendText("Error occurred, go check your terminal")
         raise
 
 def stopAllNodes():
-"""
-Turn off all nodes and make sure by sending the sync command and ensuring they all report false
-"""
+    """
+    Turn off all nodes and make sure by sending the sync command and ensuring they all report false
+    """
     try:
         tries = 0
         while True:
@@ -775,14 +785,14 @@ Turn off all nodes and make sure by sending the sync command and ensuring they a
         raise
 
 def startAllNodes():
-"""
-Turn all nodes on by broadcasting the startup command 3 times, no way to know in real-time if it succeeds since even after startup the sync takes ~5 minutes
-"""
+    """
+    Turn all nodes on by broadcasting the startup command 3 times, no way to know in real-time if it succeeds since even after startup the sync takes ~5 minutes
+    """
     try:
         tries = 0
         while tries < 3:
             for n in threadNames:
-                startup(n)
+                startupNode(n)
             tries += 1
         return
     except:
@@ -792,25 +802,140 @@ Turn all nodes on by broadcasting the startup command 3 times, no way to know in
         time.sleep(1.2)
         raise
 
+def silenceNode(name, results):
+    """
+    send the slientmode true command to a nodes, results[name] = (success, stdout, stderr). Both should be empty on success
+    """
+    result = [False, "N/a", "N/a"]
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command("zcash/src/zcash-cli silentmode true")
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        client.close()
+        output = ''.join(stdout.readlines())
+        error = ''.join(stderr.readlines())
+        if output != "" or "error" in error:
+            result[1] = output
+            result[2] = error
+        else:
+            result[0] = True
+    except:
+        writeToLog(f"An error occurred: {sys.exc_info()[0]}, returning from silenceNode\n")
+    finally:
+        results[name] = result
+        return
+
+def unsilenceNode(name, results):
+    """
+    send the slientmode false command to a nodes, results[name] = (success, stdout, stderr). Both should be empty on success
+    """
+    result = [False, "N/a", "N/a"]
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(allNodes[int(name)], username=user, key_filename=filepath)
+        stdin, stdout, stderr = client.exec_command("zcash/src/zcash-cli silentmode false")
+        while not stdout.channel.exit_status_ready() and not stdout.channel.recv_ready():
+            time.sleep(0.2)
+        client.close()
+        output = ''.join(stdout.readlines())
+        error = ''.join(stderr.readlines())
+        if output != "" or "error" in error:
+            result[1] = output
+            result[2] = error
+        else:
+            result[0] = True
+        results[name] = result
+    except:
+        writeToLog(f"An error occurred: {sys.exc_info()[0]}, returning from unsilenceNode\n")
+    finally:
+        results[name] = result
+        return
+
+def silenceAllNodes():
+    """
+    send the slientmode true command to all nodes (NOTE: custom rpc command, not part of standard zcashd, is included in the zcashd of Pranav's observatory nodes)
+    """
+    try:
+        thread_list = []
+        results = {}                                                            ### name : (success, stdout, stderr)
+        for n in threadNames:
+            thread = threading.Thread(target=silenceNode, args=(n, results))
+            thread_list.append(thread)
+        for thread in thread_list:
+            thread.start()
+        for thread in thread_list:
+            thread.join()
+        for r in results:
+            if results[r][0] == False:
+                writeToLog(f"Silencing node {r} failed at height {getBlockHeight()}. Stdout: {results[r][1]}. Stderr: {results[r][2]}.\n")
+                sendText(f"Silencing node {r} failed.")
+    except:
+        writeToLog(f"Error silencing nodes at {datetime.datetime.now()}")
+        raise
+
+def unsilenceAllNodes():
+    """
+    send the slientmode false command to all nodes (NOTE: custom rpc command, not part of standard zcashd, is included in the zcashd of Pranav's observatory nodes)
+    """
+    try:
+        thread_list = []
+        results = {}                                                            ### name : (success, stdout, stderr)
+        for n in threadNames:
+            thread = threading.Thread(target=unsilenceNode, args=(n, results))
+            thread_list.append(thread)
+        for thread in thread_list:
+            thread.start()
+        for thread in thread_list:
+            thread.join()
+        for r in results:
+            if results[r][0] == False:
+                writeToLog(f"Unsilencing node {r} failed at height {getBlockHeight()}. Stdout: {results[r][1]}. Stderr: {results[r][2]}.\n")
+                sendText(f"Unsilencing node {r} failed.")
+    except:
+        writeToLog(f"Error unsilencing nodes at {datetime.datetime.now()}")
+        raise
+
 def idle(experimentTime):
-"""
-Wait for experiment time. Checks every 5 minutes and writes to log so we know its still running
-"""
+    """
+    Wait for experiment time. Checks every 5 minutes and writes to log so we know its still running
+    """
     lastflip = datetime.datetime.now()
+    total_seconds = 0
     while(total_seconds < experimentTime):                                      ### Only want to check every 5 minutes since shorter than that isn't a good experiment anyway
         time.sleep(300)
         time_delta = (datetime.datetime.now() - lastflip)
         total_seconds = round(time_delta.total_seconds())
-        writeToLog(f">{total_seconds} seconds since last startup, {experimentTime - total_seconds} to go until next shutdown\n")
+        writeToLog(f">{total_seconds} seconds since last state change, {experimentTime - total_seconds} to go until next\n")
+    return
+
+def templog(message, file):
+    f = open(file, "a")
+    f.write(message)
+    f.close()
 
 def manageRun():
-"""
-Turn on all nodes and let them run for the time specified in the -e flag. Afterwards, turn off nodes for that period of time. Repeat. Used for gathering data about network propagation with/without speedup nodes on
-"""
-    writeToLog(f"Experiment time set to {experimentTime/60} minutes\n")
+    """
+    Turn on all nodes and let them run for the time specified in the -e flag. Afterwards, turn off nodes for that period of time. Repeat. Used for gathering data about network propagation with/without speedup nodes on
+    """
+    writeToLog(f"Experiment time set to {experimentTime} blocks\n")
     try:
+        startAllNodes()
         iteration = 1
+        prevBlock = getBlockHeight()
+        writeToLog(f"Initial block - {prevBlock}\n")
+        prevTime = datetime.datetime.now()
+        tempfileOn = logfileName[:-4] + "-ON.txt"
+        tempfileOff = logfileName[:-4] + "-Off.txt"
+        open(tempfileOn, "x")
+        open(tempfileOff, "x")
+        silent = None
         while True:                                                             ### Do forever - Start/stop every N minutes
+            """
+            CODE FOR IF EXPERIIMENTS ARE DESIRED IN HOURS
             writeToLog(f"Sending startup command to all nodes at {datetime.datetime.now()}. Beginning iteration {iteration}. Sleeping for {experimentTime} seconds after startup\n")
             startAllNodes()
             idle(experimentTime)
@@ -818,16 +943,45 @@ Turn on all nodes and let them run for the time specified in the -e flag. Afterw
             stopAllNodes()
             idle(experimentTime)
             iteration += 1
+            """
+            time.sleep(0.1)
+            currentBlock = getBlockHeight()
+            if currentBlock == prevBlock:
+                continue
+            elif currentBlock > prevBlock:
+                currTime = datetime.datetime.now()
+                time_delta = (currTime - prevTime)
+                prevTime = currTime
+                writeToLog(f">New block {currentBlock} at {currTime}. {time_delta.total_seconds()} seconds after previous\n")
+                if silent == None:
+                    bs = """do nothing here, data isn't safe/usable"""
+                elif silent == True:
+                    templog(f"{currentBlock} after: {time_delta.total_seconds()} seconds\n", tempfileOff)
+                else:
+                    templog(f"{currentBlock} after: {time_delta.total_seconds()} seconds\n", tempfileOn)
+                if currentBlock % experimentTime == 0:                          ### TBD - determine how often to turn on/off propagation for optimal research
+                    writeToLog(f">Silencing nodes on block {currentBlock}\n")
+                    silenceAllNodes()                                           ### zcash-cli silentmode false
+                    silent = True
+                elif currentBlock % experimentTime == experimentTime/2:
+                    writeToLog(f">Un-silencing nodes on block {currentBlock}\n")
+                    unsilenceAllNodes()                                         ### zcash-cli silentmode true
+                    silent = False
+            else:
+                writeToLog(f"Major issue with getting block height at {datetime.datetime.now()}. Reported {currentBlock} with previous as {prevBlock}\n")
+            prevBlock = currentBlock
     except:
-        writeToLog(f"Exception occurred at {datetime.datetime.now()}, experiment thread is shutting down\n")
+        print(f"Exception: {sys.exc_info()} occurred at {datetime.datetime.now()}, experiment thread is shutting down\n")
+        writeToLog(f"Exception: {sys.exc_info()[0]} occurred at {datetime.datetime.now()}, experiment thread is shutting down\n")
+        success = sendTextSuccess(f"Exception occurred at {datetime.datetime.now()}, experiment thread is shutting down\n")
     finally:
         writeToLog(f"Experiment thread shut down at {datetime.datetime.now()}\n")
         return
 
 def main():
-"""
-Parse arguments and start all the threads
-"""
+    """
+    Parse arguments and start all the threads
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("-l", "--logfile", help="Record to logfile", action = "store_true", default = False)
     parser.add_argument("-i", "--input", help="File of IPs to bind with", action = "store", dest = "inputFile")
@@ -875,12 +1029,12 @@ Parse arguments and start all the threads
     else:
         print("Text reminders disabled this run")
     maxDuplicates = args.maxDupe                                                ### max duplicates allowed
-    experimentTime = args.experimentTime * 60                                   ### Set time between shutdown/startup
+    experimentTime = args.experimentTime                                        ### Set blocks between shutdown/startup
     print(f"{maxDuplicates} maximum duplicates of a peer allowed")
     for i in range(0, len(allNodes)):     ### create and start threads
         name = str(i)
         t = threading.Thread(target=work, args=(allNodes[i], name,))
-        t.daemon = True
+        t.setDaemon(True)
         t.start()
         threadNames.add(name)
         threadsRunning.append(t)
@@ -890,11 +1044,11 @@ Parse arguments and start all the threads
     UserThread = threading.Thread(target = getInput)                            ### starting user thread, only non-daemon
     UserThread.start()
     peerThread = threading.Thread(target = managePeers)                         ### Peerlist manipulator thread
-    peerThread.daemon = True
+    peerThread.setDaemon(True)
     peerThread.start()
-                    if experimentTime > 0:                                      ### Experiment management thread
+    if experimentTime > 0:                                                      ### Experiment management thread
         experimentThread = threading.Thread(target = manageRun)
-        experimentThread.daemon = True
+        experimentThread.setDaemon(True)
         experimentThread.start()
 
 main()                                                                          ### run Main
